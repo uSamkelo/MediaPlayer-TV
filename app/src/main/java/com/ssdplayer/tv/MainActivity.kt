@@ -62,7 +62,6 @@ import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
-import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import androidx.tv.material3.darkColorScheme
@@ -73,7 +72,11 @@ import coil.memory.MemoryCache
 import coil.request.ImageRequest
 import coil.request.videoFramePercent
 
-private val Bg = Color(0xFF0A0A0C)
+private val Bg = Color.Black
+private val ExtrasWords = Regex(
+    "featurette|interview|extras|behind the scenes|diaries|deleted scene|trailer|gallery|bonus|making of",
+    RegexOption.IGNORE_CASE,
+)
 private val Muted = Color(0xFFA8A8B0)
 private val Glass = Color.White.copy(alpha = 0.14f)
 private val SidePad = 64.dp
@@ -141,7 +144,10 @@ private fun HomeScreen(vm: LibraryViewModel) {
             .sortedByDescending { Progress.lastPlayed(ctx, it.uri.toString()) }
         buildList {
             if (resume.isNotEmpty()) add(Shelf("Up Next", resume))
-            vm.videos.groupBy { it.folder }.forEach { (f, v) -> add(Shelf(f, v)) }
+            // Main content first, bonus material (featurettes, interviews...) last.
+            vm.videos.groupBy { it.folder }.entries
+                .sortedBy { if (ExtrasWords.containsMatchIn(it.key)) 1 else 0 }
+                .forEach { (f, v) -> add(Shelf(f, v)) }
         }
     }
 
@@ -149,6 +155,7 @@ private fun HomeScreen(vm: LibraryViewModel) {
     val hero = focused ?: rows.firstOrNull()?.videos?.firstOrNull()
     val listState = rememberLazyListState()
     var focusedRow by remember { mutableIntStateOf(0) }
+    var focusedIndex by remember { mutableIntStateOf(0) }
     // Keep the focused row pinned under the hero so the previous row never peeks in above it.
     LaunchedEffect(focusedRow, rows.size) {
         if (rows.isNotEmpty()) listState.animateScrollToItem(focusedRow.coerceIn(0, rows.lastIndex))
@@ -180,7 +187,14 @@ private fun HomeScreen(vm: LibraryViewModel) {
             if (!vm.hasFolder) {
                 EmptyState(onPick = { chooseFolder() }, onScan = { scanDevice() })
             } else {
-                HeroInfo(hero, loading = vm.loading)
+                HeroInfo(
+                    video = hero,
+                    loading = vm.loading,
+                    resume = hero?.let { Progress.position(ctx, it.uri.toString()) > 0 } == true,
+                    onPlay = {
+                        rows.getOrNull(focusedRow)?.let { play(ctx, it.videos, focusedIndex.coerceIn(0, it.videos.lastIndex)) }
+                    },
+                )
                 val first = remember { FocusRequester() }
                 LaunchedEffect(rows.isNotEmpty()) {
                     if (rows.isNotEmpty()) runCatching { first.requestFocus() }
@@ -214,7 +228,7 @@ private fun HomeScreen(vm: LibraryViewModel) {
                                         loader = loader,
                                         progress = Progress.fraction(ctx, v.uri.toString()).takeIf { it > 0f },
                                         modifier = if (r == 0 && i == 0) Modifier.focusRequester(first) else Modifier,
-                                        onFocus = { focused = v; focusedRow = r },
+                                        onFocus = { focused = v; focusedRow = r; focusedIndex = i },
                                         onClick = { play(ctx, row.videos, i) },
                                     )
                                 }
@@ -279,22 +293,12 @@ private fun Pill(text: String) {
 }
 
 @Composable
-private fun HeroInfo(video: Video?, loading: Boolean) {
+private fun HeroInfo(video: Video?, loading: Boolean, resume: Boolean, onPlay: () -> Unit) {
     Column(
         Modifier.height(210.dp).fillMaxWidth(0.62f),
         verticalArrangement = Arrangement.Bottom,
     ) {
         if (video != null) {
-            Text(
-                video.folder.uppercase(),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 1.5.sp,
-                color = Muted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(6.dp))
             Text(
                 video.title,
                 fontSize = 40.sp,
@@ -311,6 +315,18 @@ private fun HeroInfo(video: Video?, loading: Boolean) {
                 if (size.isNotEmpty()) Text(size, fontSize = 14.sp, color = Muted)
                 video.badges.forEach { Pill(it) }
             }
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = onPlay,
+                shape = ButtonDefaults.shape(RoundedCornerShape(50)),
+                colors = ButtonDefaults.colors(
+                    containerColor = Color.White.copy(alpha = 0.85f),
+                    contentColor = Color.Black,
+                    focusedContainerColor = Color.White,
+                    focusedContentColor = Color.Black,
+                ),
+                contentPadding = PaddingValues(horizontal = 28.dp, vertical = 8.dp),
+            ) { Text(if (resume) "Resume" else "Play", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
         } else {
             Text(if (loading) "Scanning…" else "No videos found", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
         }
@@ -380,9 +396,8 @@ private fun VideoCard(
                     if (it.hasFocus) onFocus()
                 },
             shape = CardDefaults.shape(shape),
-            scale = CardDefaults.scale(focusedScale = 1.1f),
-            border = CardDefaults.border(focusedBorder = Border(BorderStroke(3.dp, Color.White), shape = shape)),
-            glow = CardDefaults.glow(focusedGlow = Glow(elevationColor = Color.White.copy(alpha = 0.25f), elevation = 16.dp)),
+            scale = CardDefaults.scale(focusedScale = 1.08f),
+            border = CardDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Color.White), shape = shape)),
             colors = CardDefaults.colors(containerColor = Color.Black, focusedContainerColor = Color.Black),
         ) {
             Box(Modifier.fillMaxSize()) {
@@ -401,7 +416,7 @@ private fun VideoCard(
             color = if (isFocused) Color.White else Muted,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 12.dp),
+            modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 20.dp),
         )
     }
 }
